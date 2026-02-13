@@ -63,5 +63,47 @@ router.post("/signup", async (req, res) => {
 
 });
 
+// Login endpoint
+router.post("/login", async (req, res) => {
+
+  try {
+
+    const { email, password } = req.body;
+
+    // Basic validation
+    if (!email || !password) {
+      return res.status(400).json({
+        error: "Email and password required"
+      });
+    }
+
+    // Authenticate with Supabase
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
+
+    if (error) {
+      return res.status(400).json({
+        error: error.message
+      });
+    }
+
+    res.json({
+      message: "Login successful",
+      user: data.user,
+      session: data.session
+    });
+
+  } catch (err) {
+
+    res.status(500).json({
+      error: err.message
+    });
+
+  }
+
+});
+
 
 module.exports = router;
