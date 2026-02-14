@@ -4,6 +4,69 @@ const router = express.Router();
 const supabase = require("../supabaseClient");
 const estimateFoodSafety = require("../aiService");
 
+const ERNAKULAM_BOUNDARY = [
+  [10.355, 76.08],
+  [10.36, 76.42],
+  [10.24, 76.76],
+  [9.83, 76.79],
+  [9.71, 76.44],
+  [9.76, 76.09],
+  [9.98, 75.98]
+];
+
+function isPointInPolygon(lat, lng, polygon) {
+  let inside = false;
+
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [latI, lngI] = polygon[i];
+    const [latJ, lngJ] = polygon[j];
+
+    const intersects =
+      (latI > lat) !== (latJ > lat) &&
+      lng < ((lngJ - lngI) * (lat - latI)) / (latJ - latI) + lngI;
+
+    if (intersects) inside = !inside;
+  }
+
+  return inside;
+}
+
+function isWithinErnakulam(lat, lng) {
+  return isPointInPolygon(lat, lng, ERNAKULAM_BOUNDARY);
+}
+
+function parseCoordinate(value) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function geocodeErnakulamLocation(locationText) {
+  const rawQuery = String(locationText || "").trim();
+  if (!rawQuery) return null;
+
+  const query = rawQuery.toLowerCase().includes("ernakulam")
+    ? rawQuery
+    : `${rawQuery}, Ernakulam, Kerala, India`;
+
+  const response = await fetch(
+    `https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=in&bounded=1&viewbox=75.98,10.36,76.79,9.71&limit=1&q=${encodeURIComponent(
+      query
+    )}`
+  );
+
+  const data = await response.json().catch(() => []);
+  if (!response.ok || !Array.isArray(data) || !data.length) return null;
+
+  const latitude = Number(data[0].lat);
+  const longitude = Number(data[0].lon);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+
+  return { latitude, longitude };
+}
+
 
 // ===============================
 // Add food listing (Donor)
@@ -34,6 +97,21 @@ router.post("/add", async (req, res) => {
       });
     }
 
+    const latitudeValue = Number(latitude);
+    const longitudeValue = Number(longitude);
+
+    if (!Number.isFinite(latitudeValue) || !Number.isFinite(longitudeValue)) {
+      return res.status(400).json({
+        error: "Valid latitude and longitude are required"
+      });
+    }
+
+    if (!isWithinErnakulam(latitudeValue, longitudeValue)) {
+      return res.status(400).json({
+        error: "Pickup location must be inside Ernakulam district"
+      });
+    }
+
     const aiResult = estimateFoodSafety(food_type, prep_time);
 
     const { data, error } = await supabase
@@ -43,8 +121,8 @@ router.post("/add", async (req, res) => {
         quantity,
         prep_time,
         location,
-        latitude,
-        longitude,
+        latitude: latitudeValue,
+        longitude: longitudeValue,
         donor_id,
         urgency: aiResult.urgency,
         expiry_time: aiResult.expiryTime,
@@ -83,7 +161,7 @@ router.get("/nearby/:ngoId", async (req, res) => {
     // Get NGO coordinates
     const { data: ngo, error: ngoError } = await supabase
       .from("users")
-      .select("latitude, longitude")
+      .select("latitude, longitude, location")
       .eq("id", ngoId)
       .single();
 
@@ -93,14 +171,40 @@ router.get("/nearby/:ngoId", async (req, res) => {
       });
     }
 
-    const ngoLat = ngo.latitude;
-    const ngoLng = ngo.longitude;
+    let ngoLat = parseCoordinate(ngo.latitude);
+    let ngoLng = parseCoordinate(ngo.longitude);
+
+    if (ngoLat === null || ngoLng === null) {
+      const geocoded = await geocodeErnakulamLocation(ngo.location);
+
+      if (geocoded && isWithinErnakulam(geocoded.latitude, geocoded.longitude)) {
+        ngoLat = geocoded.latitude;
+        ngoLng = geocoded.longitude;
+
+        await supabase
+          .from("users")
+          .update({
+            latitude: ngoLat,
+            longitude: ngoLng
+          })
+          .eq("id", ngoId);
+      }
+    }
+
+    if (ngoLat === null || ngoLng === null) {
+      return res.status(400).json({
+        error: "NGO location coordinates unavailable. Update NGO location in profile."
+      });
+    }
+
+    const nowIso = new Date().toISOString();
 
     // Get available food
     const { data: foodListings, error } = await supabase
       .from("food_listings")
       .select("*")
-      .eq("status", "available");
+      .eq("status", "available")
+      .gt("expiry_time", nowIso);
 
     if (error) {
       return res.status(400).json({ error: error.message });
@@ -142,6 +246,11 @@ router.get("/nearby/:ngoId", async (req, res) => {
 
     res.json({
       count: nearbyFood.length,
+      radius_km: 15,
+      ngo_location: {
+        latitude: ngoLat,
+        longitude: ngoLng
+      },
       food: nearbyFood
     });
 

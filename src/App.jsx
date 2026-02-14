@@ -1,6 +1,29 @@
 import { useEffect, useState } from 'react'
+import L from 'leaflet'
+import {
+  Circle,
+  MapContainer,
+  Marker,
+  Polygon,
+  Popup,
+  TileLayer,
+  useMap,
+  useMapEvents,
+} from 'react-leaflet'
 import './App.css'
+import 'leaflet/dist/leaflet.css'
 import heroIllustration from './assets/mealbridge.png'
+import markerIconUrl from 'leaflet/dist/images/marker-icon.png'
+import markerShadowUrl from 'leaflet/dist/images/marker-shadow.png'
+
+const leafletMarkerIcon = L.icon({
+  iconUrl: markerIconUrl,
+  shadowUrl: markerShadowUrl,
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41],
+})
 
 const navLinks = [
   { label: 'Home', path: '/' },
@@ -146,6 +169,18 @@ const initialDonateForm = {
   longitude: '',
 }
 
+const ERNAKULAM_MAP_CENTER = [9.9816, 76.2999]
+const NGO_LISTING_RADIUS_METERS = 15000
+const ERNAKULAM_BOUNDARY = [
+  [10.355, 76.08],
+  [10.36, 76.42],
+  [10.24, 76.76],
+  [9.83, 76.79],
+  [9.71, 76.44],
+  [9.76, 76.09],
+  [9.98, 75.98],
+]
+
 const AUTH_STORAGE_KEY = 'mealbridge_auth'
 const donorOnlyRoutes = [
   '/donor-dashboard',
@@ -272,6 +307,56 @@ const urgencyRank = (urgency = '') => {
   return 0
 }
 
+const isPointInPolygon = (lat, lng, polygon) => {
+  let inside = false
+
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [latI, lngI] = polygon[i]
+    const [latJ, lngJ] = polygon[j]
+
+    const intersects =
+      (latI > lat) !== (latJ > lat) &&
+      lng < ((lngJ - lngI) * (lat - latI)) / (latJ - latI) + lngI
+
+    if (intersects) inside = !inside
+  }
+
+  return inside
+}
+
+const isWithinErnakulam = (lat, lng) =>
+  isPointInPolygon(lat, lng, ERNAKULAM_BOUNDARY)
+
+const parseCoordinate = (value) => {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) return null
+  const parsed = Number(normalized)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function DonateMapPicker({ onPick }) {
+  useMapEvents({
+    click(event) {
+      onPick(event.latlng)
+    },
+  })
+
+  return null
+}
+
+function DonateMapViewport({ latitude, longitude }) {
+  const map = useMap()
+
+  useEffect(() => {
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return
+    map.flyTo([latitude, longitude], Math.max(map.getZoom(), 13), {
+      duration: 0.7,
+    })
+  }, [latitude, longitude, map])
+
+  return null
+}
+
 function App() {
   const [route, setRoute] = useState(getRouteFromHash())
   const [authUser, setAuthUser] = useState(readStoredAuth)
@@ -285,11 +370,17 @@ function App() {
     type: '',
     text: '',
   })
+  const [mapPickState, setMapPickState] = useState({
+    loading: false,
+    error: '',
+    address: '',
+  })
   const [ngoSelectState, setNgoSelectState] = useState({
     loadingId: '',
     type: '',
     text: '',
   })
+  const [highlightedNgoListingId, setHighlightedNgoListingId] = useState('')
 
   useEffect(() => {
     const onHashChange = () => setRoute(getRouteFromHash())
@@ -308,12 +399,18 @@ function App() {
   useEffect(() => {
     if (route === '/donate') {
       setDonateState({ loading: false, type: '', text: '' })
+      setMapPickState({ loading: false, error: '', address: '' })
     }
   }, [route])
 
   useEffect(() => {
     if (route === '/ngo-open-listings') return
     setNgoSelectState({ loadingId: '', type: '', text: '' })
+  }, [route])
+
+  useEffect(() => {
+    if (route === '/ngo-open-listings') return
+    setHighlightedNgoListingId('')
   }, [route])
 
   useEffect(() => {
@@ -415,6 +512,7 @@ function App() {
     totalDonations: 0,
     donations: [],
     available: [],
+    ngoLocation: null,
     loading: false,
     error: '',
   })
@@ -549,6 +647,19 @@ function App() {
       return new Date(a.expiry_time || 0) - new Date(b.expiry_time || 0)
     })
 
+  const ngoLatitude = parseCoordinate(ngoDashboard.ngoLocation?.latitude)
+  const ngoLongitude = parseCoordinate(ngoDashboard.ngoLocation?.longitude)
+  const hasNgoLocation = ngoLatitude !== null && ngoLongitude !== null
+  const ngoMapCenter = hasNgoLocation
+    ? [ngoLatitude, ngoLongitude]
+    : ERNAKULAM_MAP_CENTER
+
+  const ngoMappableListings = ngoOpenListings.filter(
+    (listing) =>
+      Number.isFinite(Number(listing.latitude)) &&
+      Number.isFinite(Number(listing.longitude)),
+  )
+
   const ngoPartners = Object.values(
     ngoDashboard.donations.reduce((acc, donation) => {
       const donorName = donation.users?.name || 'Unknown donor'
@@ -590,6 +701,20 @@ function App() {
     acc[status] = (acc[status] || 0) + 1
     return acc
   }, {})
+
+  useEffect(() => {
+    if (!highlightedNgoListingId) return
+    const stillVisible = ngoOpenListings.some(
+      (listing) => listing.id === highlightedNgoListingId,
+    )
+    if (!stillVisible) {
+      setHighlightedNgoListingId('')
+    }
+  }, [highlightedNgoListingId, ngoOpenListings])
+
+  const donateLatitude = parseCoordinate(donateForm.latitude)
+  const donateLongitude = parseCoordinate(donateForm.longitude)
+  const hasDonateMapPoint = donateLatitude !== null && donateLongitude !== null
 
   const onAuthInput = (event) => {
     const { name, value } = event.target
@@ -707,6 +832,95 @@ function App() {
     setDonateForm((previous) => ({ ...previous, [name]: value }))
   }
 
+  const pinDonateLocation = ({ lat, lng }) => {
+    const roundedLat = Number(lat.toFixed(6))
+    const roundedLng = Number(lng.toFixed(6))
+
+    if (!isWithinErnakulam(roundedLat, roundedLng)) {
+      setDonateForm((previous) => ({
+        ...previous,
+        latitude: '',
+        longitude: '',
+      }))
+      setMapPickState({
+        loading: false,
+        error:
+          'Please choose a pickup point inside Ernakulam district boundary.',
+        address: '',
+      })
+      return null
+    }
+
+    setDonateForm((previous) => ({
+      ...previous,
+      latitude: String(roundedLat),
+      longitude: String(roundedLng),
+    }))
+
+    return { latitude: roundedLat, longitude: roundedLng }
+  }
+
+  const reverseGeocodeDonatePoint = async (lat, lng) => {
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
+
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error('Reverse geocoding failed')
+    }
+
+    return String(data?.display_name || '').trim()
+  }
+
+  const onDonateMapPick = async ({ lat, lng }) => {
+    const pinned = pinDonateLocation({ lat, lng })
+    if (!pinned) return
+
+    setMapPickState({
+      loading: true,
+      error: '',
+      address: '',
+    })
+
+    try {
+      const resolvedAddress = await reverseGeocodeDonatePoint(
+        pinned.latitude,
+        pinned.longitude,
+      )
+
+      setMapPickState({
+        loading: false,
+        error: '',
+        address: resolvedAddress,
+      })
+
+      if (resolvedAddress) {
+        setDonateForm((previous) => ({
+          ...previous,
+          location: resolvedAddress,
+        }))
+      } else {
+        setMapPickState({
+          loading: false,
+          error: 'Pin saved. Please enter location text manually.',
+          address: '',
+        })
+      }
+    } catch {
+      setMapPickState({
+        loading: false,
+        error: 'Pin saved. Could not auto-fill address. Enter location text manually.',
+        address: '',
+      })
+    }
+  }
+
   const onDonateSubmit = async (event) => {
     event.preventDefault()
     setDonateState({ loading: true, type: '', text: '' })
@@ -722,14 +936,35 @@ function App() {
       return
     }
 
+    const latitudeValue = parseCoordinate(donateForm.latitude)
+    const longitudeValue = parseCoordinate(donateForm.longitude)
+
+    if (latitudeValue === null || longitudeValue === null) {
+      setDonateState({
+        loading: false,
+        type: 'error',
+        text: 'Please select pickup location on the map.',
+      })
+      return
+    }
+
+    if (!isWithinErnakulam(latitudeValue, longitudeValue)) {
+      setDonateState({
+        loading: false,
+        type: 'error',
+        text: 'Pickup location must be inside Ernakulam district.',
+      })
+      return
+    }
+
     const payload = {
       donor_id: donorIdToUse,
       food_type: donateForm.food_type,
       quantity: Number(donateForm.quantity),
       prep_time: donateForm.prep_time,
       location: donateForm.location,
-      latitude: donateForm.latitude ? Number(donateForm.latitude) : null,
-      longitude: donateForm.longitude ? Number(donateForm.longitude) : null,
+      latitude: latitudeValue,
+      longitude: longitudeValue,
     }
 
     try {
@@ -759,6 +994,7 @@ function App() {
         latitude: '',
         longitude: '',
       }))
+      setMapPickState({ loading: false, error: '', address: '' })
     } catch (error) {
       setDonateState({
         loading: false,
@@ -902,13 +1138,13 @@ function App() {
           fetch(`${apiBase}/api/food/ngo-analytics/${ngoId}`, {
             cache: 'no-store',
           }),
-          fetch(`${apiBase}/api/food/available`, {
+          fetch(`${apiBase}/api/food/nearby/${ngoId}`, {
             cache: 'no-store',
           }),
         ])
 
         const analyticsData = await analyticsRes.json().catch(() => ({}))
-        const availableData = await availableRes.json().catch(() => [])
+        const availableData = await availableRes.json().catch(() => ({}))
 
         if (!analyticsRes.ok) {
           throw new Error(analyticsData.error || 'Failed to load NGO analytics')
@@ -924,7 +1160,8 @@ function App() {
           totalReceived: analyticsData.totalReceived || 0,
           totalDonations: analyticsData.totalDonations || 0,
           donations: analyticsData.donations || [],
-          available: Array.isArray(availableData) ? availableData : [],
+          available: Array.isArray(availableData.food) ? availableData.food : [],
+          ngoLocation: availableData.ngo_location || null,
           loading: false,
           error: '',
         })
@@ -1081,13 +1318,18 @@ function App() {
                     </select>
                   </label>
                   <label>
-                    Location
+                    {authForm.role === 'ngo' ? 'NGO Location' : 'Location'}
                     <input
                       name="location"
                       type="text"
                       value={authForm.location}
                       onChange={onAuthInput}
-                      placeholder="City / Area"
+                      required={authForm.role === 'ngo'}
+                      placeholder={
+                        authForm.role === 'ngo'
+                          ? 'e.g. Aluva, Ernakulam'
+                          : 'City / Area'
+                      }
                     />
                   </label>
                 </>
@@ -1168,13 +1410,13 @@ function App() {
                   />
                 </label>
                 <label>
-                  Preparation Time
+                  Prepared Time
                   <input
                     name="prep_time"
+                    type="datetime-local"
                     value={donateForm.prep_time}
                     onChange={onDonateInput}
                     required
-                    placeholder="e.g. 2026-02-13 18:30"
                   />
                 </label>
                 <label>
@@ -1187,28 +1429,62 @@ function App() {
                     placeholder="Area / Landmark"
                   />
                 </label>
-                <label>
-                  Latitude (optional)
-                  <input
-                    name="latitude"
-                    type="number"
-                    step="any"
-                    value={donateForm.latitude}
-                    onChange={onDonateInput}
-                    placeholder="e.g. 12.9716"
-                  />
-                </label>
-                <label>
-                  Longitude (optional)
-                  <input
-                    name="longitude"
-                    type="number"
-                    step="any"
-                    value={donateForm.longitude}
-                    onChange={onDonateInput}
-                    placeholder="e.g. 77.5946"
-                  />
-                </label>
+                <div className="donate-map-section">
+                  <p className="donate-map-label">
+                    Pickup Pin (Ernakulam district only)
+                  </p>
+                  <p className="donate-map-help">
+                    Click on the map to choose exact pickup location. Coordinates
+                    are saved automatically.
+                  </p>
+                  <MapContainer
+                    center={ERNAKULAM_MAP_CENTER}
+                    zoom={10}
+                    className="donate-map"
+                    scrollWheelZoom
+                  >
+                    <TileLayer
+                      attribution='&copy; OpenStreetMap contributors'
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    />
+                    <Polygon
+                      positions={ERNAKULAM_BOUNDARY}
+                      pathOptions={{
+                        color: '#0f5f8c',
+                        weight: 2,
+                        fillOpacity: 0.09,
+                      }}
+                    />
+                    {hasDonateMapPoint && (
+                      <Marker
+                        icon={leafletMarkerIcon}
+                        position={[donateLatitude, donateLongitude]}
+                      >
+                        <Popup>Pickup location selected</Popup>
+                      </Marker>
+                    )}
+                    <DonateMapPicker onPick={onDonateMapPick} />
+                    <DonateMapViewport
+                      latitude={donateLatitude}
+                      longitude={donateLongitude}
+                    />
+                  </MapContainer>
+
+                  <p className="donate-map-selected">
+                    {hasDonateMapPoint
+                      ? `Selected: ${donateLatitude.toFixed(6)}, ${donateLongitude.toFixed(6)}`
+                      : 'No map pin selected yet'}
+                  </p>
+                  {mapPickState.loading && (
+                    <p className="donate-map-status">Finding nearest address...</p>
+                  )}
+                  {mapPickState.address && (
+                    <p className="donate-map-status">{mapPickState.address}</p>
+                  )}
+                  {mapPickState.error && (
+                    <p className="donate-map-error">{mapPickState.error}</p>
+                  )}
+                </div>
 
                 <button className="donate-submit" type="submit" disabled={donateState.loading}>
                   {donateState.loading ? 'Submitting...' : 'Submit Listing'}
@@ -1879,8 +2155,63 @@ function App() {
               <section className="dash-panel ngo-open-panel">
                 <div className="panel-head">
                   <h2>Available Nearby Food</h2>
-                  <p>{ngoOpenListings.length} active listings</p>
+                  <p>Within 15 km radius</p>
                 </div>
+
+                <div className="ngo-open-map-wrap">
+                  <MapContainer
+                    center={ngoMapCenter}
+                    zoom={12}
+                    className="ngo-open-map"
+                    scrollWheelZoom
+                  >
+                    <TileLayer
+                      attribution='&copy; OpenStreetMap contributors'
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    />
+                    <Circle
+                      center={ngoMapCenter}
+                      radius={NGO_LISTING_RADIUS_METERS}
+                      pathOptions={{
+                        color: '#0f5f8c',
+                        weight: 2,
+                        fillColor: '#8bd0e5',
+                        fillOpacity: 0.12,
+                      }}
+                    />
+                    {hasNgoLocation && (
+                      <Marker icon={leafletMarkerIcon} position={ngoMapCenter}>
+                        <Popup>Your NGO location</Popup>
+                      </Marker>
+                    )}
+                    {ngoMappableListings.map((listing) => (
+                      <Marker
+                        key={`map-${listing.id}`}
+                        icon={leafletMarkerIcon}
+                        position={[Number(listing.latitude), Number(listing.longitude)]}
+                        eventHandlers={{
+                          click: () => setHighlightedNgoListingId(listing.id),
+                        }}
+                      >
+                        <Popup>
+                          <strong>{listing.food_type || 'Food listing'}</strong>
+                          <br />
+                          Qty: {listing.quantity || 0} plates
+                          <br />
+                          {listing.location || 'N/A'}
+                        </Popup>
+                      </Marker>
+                    ))}
+                  </MapContainer>
+                  {!hasNgoLocation && (
+                    <p className="ngo-open-map-note">
+                      Showing Ernakulam center by default. Set NGO location during
+                      registration for exact nearby radius.
+                    </p>
+                  )}
+                </div>
+
+                <p className="ngo-open-count">{ngoOpenListings.length} active listings</p>
 
                 <div className="listing-grid ngo-open-grid">
                   {ngoOpenListings.length ? (
@@ -1888,7 +2219,14 @@ function App() {
                       const urgency = String(listing.urgency || 'unknown').toLowerCase()
                       const urgencyClass = `status-pill status-${urgency}`
                       return (
-                        <article key={listing.id} className="listing-card">
+                        <article
+                          key={listing.id}
+                          className={`listing-card ${
+                            highlightedNgoListingId === listing.id
+                              ? 'listing-card-highlight'
+                              : ''
+                          }`}
+                        >
                           <div className="listing-card-head">
                             <h3>{listing.food_type || 'Food listing'}</h3>
                             <span className={urgencyClass}>{urgency}</span>
