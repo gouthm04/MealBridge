@@ -2,12 +2,14 @@ const express = require("express");
 const router = express.Router();
 
 const supabase = require("../supabaseClient");
-const estimateFoodSafety = require("../aiService");
+
+const estimateFoodSafety =
+  require("../services/urgencyServices");
 
 
-// ===============================
-// Add food listing (Donor)
-// ===============================
+
+// Add food listing
+
 router.post("/add", async (req, res) => {
 
   try {
@@ -22,182 +24,69 @@ router.post("/add", async (req, res) => {
       donor_id
     } = req.body;
 
-    if (!food_type || !quantity || !prep_time || !location || !donor_id) {
+
+    if (!food_type || !quantity || !prep_time || !location || !donor_id)
       return res.status(400).json({
         error: "Missing required fields"
       });
-    }
 
-    if (quantity <= 0) {
+
+    if (quantity <= 0)
       return res.status(400).json({
         error: "Quantity must be greater than 0"
       });
-    }
-
-    const aiResult = estimateFoodSafety(food_type, prep_time);
-
-    const { data, error } = await supabase
-      .from("food_listings")
-      .insert({
-        food_type,
-        quantity,
-        prep_time,
-        location,
-        latitude,
-        longitude,
-        donor_id,
-        urgency: aiResult.urgency,
-        expiry_time: aiResult.expiryTime,
-        status: "available"
-      })
-      .select()
-      .single();
-
-    if (error) {
-      return res.status(400).json({ error: error.message });
-    }
-
-    res.json({
-      message: "Food added successfully",
-      food: data
-    });
-
-  } catch (err) {
-
-    res.status(500).json({ error: err.message });
-
-  }
-
-});
 
 
-// ===============================
-// Get nearby food within 15km radius
-// ===============================
-router.get("/nearby/:ngoId", async (req, res) => {
+    const result =
+      estimateFoodSafety(food_type, prep_time);
 
-  try {
 
-    const ngoId = req.params.ngoId;
+    const { data, error } =
+      await supabase
+        .from("food_listings")
+        .insert({
 
-    // Get NGO coordinates
-    const { data: ngo, error: ngoError } = await supabase
-      .from("users")
-      .select("latitude, longitude")
-      .eq("id", ngoId)
-      .single();
+          food_type,
+          quantity,
+          prep_time,
+          location,
+          latitude,
+          longitude,
+          donor_id,
 
-    if (ngoError || !ngo) {
-      return res.status(400).json({
-        error: "NGO location not found"
-      });
-    }
+          urgency:
+            result.urgency,
 
-    const ngoLat = ngo.latitude;
-    const ngoLng = ngo.longitude;
+          expiry_time:
+            result.expiryTime,
 
-    // Get available food
-    const { data: foodListings, error } = await supabase
-      .from("food_listings")
-      .select("*")
-      .eq("status", "available");
+          status:
+            "available"
 
-    if (error) {
-      return res.status(400).json({ error: error.message });
-    }
+        })
+        .select()
+        .single();
 
-    // Haversine formula
-    function calculateDistance(lat1, lon1, lat2, lon2) {
 
-      const R = 6371;
-
-      const dLat = (lat2 - lat1) * Math.PI / 180;
-      const dLon = (lon2 - lon1) * Math.PI / 180;
-
-      const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1 * Math.PI / 180) *
-        Math.cos(lat2 * Math.PI / 180) *
-        Math.sin(dLon / 2) * Math.sin(dLon / 2);
-
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-      return R * c;
-    }
-
-    const nearbyFood = foodListings.filter(food => {
-
-      if (!food.latitude || !food.longitude) return false;
-
-      const distance = calculateDistance(
-        ngoLat,
-        ngoLng,
-        food.latitude,
-        food.longitude
-      );
-
-      return distance <= 15;
-
-    });
-
-    res.json({
-      count: nearbyFood.length,
-      food: nearbyFood
-    });
-
-  } catch (err) {
-
-    res.status(500).json({ error: err.message });
-
-  }
-
-});
-
-// ===============================
-// NGO analytics (dashboard)
-// ===============================
-router.get("/ngo-analytics/:ngoId", async (req, res) => {
-
-  try {
-
-    const ngoId = req.params.ngoId;
-
-    // Get completed donations received by NGO
-    const { data, error } = await supabase
-      .from("food_listings")
-      .select(`
-        id,
-        food_type,
-        quantity,
-        location,
-        completed_at,
-        users!food_listings_donor_id_fkey(name)
-      `)
-      .eq("requested_by", ngoId)
-      .eq("status", "completed");
-
-    if (error) {
+    if (error)
       return res.status(400).json({
         error: error.message
       });
-    }
 
-    // Calculate total quantity received
-    const totalReceived = data.reduce(
-      (sum, item) => sum + item.quantity,
-      0
-    );
-
-    // Count number of donations
-    const totalDonations = data.length;
 
     res.json({
-      totalReceived,
-      totalDonations,
-      donations: data
+
+      message:
+        "Food added successfully",
+
+      food:
+        data
+
     });
 
-  } catch (err) {
+  }
+
+  catch (err) {
 
     res.status(500).json({
       error: err.message
@@ -208,197 +97,346 @@ router.get("/ngo-analytics/:ngoId", async (req, res) => {
 });
 
 
-// ===============================
-// Get all available food
-// ===============================
-router.get("/available", async (req, res) => {
-
-  try {
-
-    const { data, error } = await supabase
-      .from("food_listings")
-      .select("*")
-      .eq("status", "available")
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      return res.status(400).json({ error: error.message });
-    }
-
-    res.json(data);
-
-  } catch (err) {
-
-    res.status(500).json({ error: err.message });
-
-  }
-
-});
 
 
-// ===============================
-// NGO requests food
-// ===============================
-router.put("/request/:foodId", async (req, res) => {
+// Distance calculator
 
-  try {
+function calculateDistance(
+  lat1, lon1, lat2, lon2
+) {
 
-    const { ngo_id } = req.body;
+  const R = 6371;
 
-    if (!ngo_id) {
-      return res.status(400).json({
-        error: "ngo_id required"
-      });
-    }
+  const dLat =
+    (lat2 - lat1) *
+    Math.PI / 180;
 
-    const { data, error } = await supabase
-      .from("food_listings")
-      .update({
-        requested_by: ngo_id,
-        status: "requested"
-      })
-      .eq("id", req.params.foodId)
-      .eq("status", "available")
-      .select()
-      .single();
-
-    if (error || !data) {
-      return res.status(400).json({
-        error: "Food unavailable or already requested"
-      });
-    }
-
-    res.json({
-      message: "Food requested successfully",
-      data
-    });
-
-  } catch (err) {
-
-    res.status(500).json({ error: err.message });
-
-  }
-
-});
+  const dLon =
+    (lon2 - lon1) *
+    Math.PI / 180;
 
 
-// ===============================
-// Mark donation completed
-// ===============================
-router.put("/complete/:foodId", async (req, res) => {
+  const a =
 
-  try {
+    Math.sin(dLat/2) *
+    Math.sin(dLat/2) +
 
-    const { data, error } = await supabase
-      .from("food_listings")
-      .update({
-        status: "completed",
-        completed_at: new Date()
-      })
-      .eq("id", req.params.foodId)
-      .eq("status", "requested")
-      .select()
-      .single();
+    Math.cos(lat1*Math.PI/180) *
+    Math.cos(lat2*Math.PI/180) *
 
-    if (error || !data) {
-      return res.status(400).json({
-        error: "Food must be requested first"
-      });
-    }
-
-    res.json({
-      message: "Donation marked completed",
-      data
-    });
-
-  } catch (err) {
-
-    res.status(500).json({ error: err.message });
-
-  }
-
-});
-
-// ===============================
-// Get donor listings (Donation history)
-// ===============================
-router.get("/donor-listings/:donorId", async (req, res) => {
-
-  try {
-
-    const donorId = req.params.donorId;
-
-    const { data, error } = await supabase
-      .from("food_listings")
-      .select(`
-        id,
-        food_type,
-        quantity,
-        location,
-        urgency,
-        status,
-        created_at,
-        expiry_time,
-        requested_by,
-        users!food_listings_requested_by_fkey(name)
-      `)
-      .eq("donor_id", donorId)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      return res.status(400).json({
-        error: error.message
-      });
-    }
-
-    res.json({
-      count: data.length,
-      listings: data
-    });
-
-  } catch (err) {
-
-    res.status(500).json({
-      error: err.message
-    });
-
-  }
-
-});
+    Math.sin(dLon/2) *
+    Math.sin(dLon/2);
 
 
-// ===============================
-// Donor analytics
-// ===============================
-router.get("/donor-analytics/:donorId", async (req, res) => {
-
-  try {
-
-    const { data, error } = await supabase
-      .from("food_listings")
-      .select("quantity")
-      .eq("donor_id", req.params.donorId)
-      .eq("status", "completed");
-
-    if (error) {
-      return res.status(400).json({ error: error.message });
-    }
-
-    const totalDonated = data.reduce(
-      (sum, item) => sum + item.quantity,
-      0
+  const c =
+    2 *
+    Math.atan2(
+      Math.sqrt(a),
+      Math.sqrt(1-a)
     );
 
-    res.json({ totalDonated });
 
-  } catch (err) {
+  return R*c;
 
-    res.status(500).json({ error: err.message });
+}
 
-  }
+
+
+
+// Nearby food
+
+router.get("/nearby/:ngoId",
+async (req,res)=>{
+
+try{
+
+const ngoId=
+req.params.ngoId;
+
+
+const {data:ngo,error}
+=
+await supabase
+.from("users")
+.select("latitude,longitude")
+.eq("id",ngoId)
+.single();
+
+
+if(error||!ngo)
+return res.status(400)
+.json({error:"NGO location not found"});
+
+
+const {data:foodListings}
+=
+await supabase
+.from("food_listings")
+.select("*")
+.eq("status","available");
+
+
+const updatedFood=
+
+foodListings
+
+.filter(food=>{
+
+if(!food.latitude)
+return false;
+
+
+const distance=
+
+calculateDistance(
+
+ngo.latitude,
+ngo.longitude,
+food.latitude,
+food.longitude
+
+);
+
+return distance<=15;
+
+})
+
+.map(food=>{
+
+const result=
+
+estimateFoodSafety(
+
+food.food_type,
+food.prep_time
+
+);
+
+
+if(new Date(result.expiryTime)<new Date())
+return null;
+
+
+return{
+
+...food,
+
+urgency:
+result.urgency,
+
+expiry_time:
+result.expiryTime
+
+};
+
+})
+
+.filter(Boolean);
+
+
+res.json({
+
+count:
+updatedFood.length,
+
+food:
+updatedFood
 
 });
 
 
-// ===============================
+}
+
+catch(err){
+
+res.status(500)
+.json({error:err.message});
+
+}
+
+});
+
+
+
+
+// Available food
+
+router.get("/available",
+async(req,res)=>{
+
+try{
+
+const {data}
+=
+await supabase
+.from("food_listings")
+.select("*")
+.eq("status","available");
+
+
+const updatedFood=
+
+data
+
+.map(food=>{
+
+const result=
+
+estimateFoodSafety(
+
+food.food_type,
+food.prep_time
+
+);
+
+if(new Date(result.expiryTime)<new Date())
+return null;
+
+
+return{
+
+...food,
+
+urgency:
+result.urgency,
+
+expiry_time:
+result.expiryTime
+
+};
+
+})
+
+.filter(Boolean);
+
+
+res.json(updatedFood);
+
+}
+
+catch(err){
+
+res.status(500)
+.json({error:err.message});
+
+}
+
+});
+
+
+
+
+// Request food
+
+router.put("/request/:foodId",
+async(req,res)=>{
+
+try{
+
+const {ngo_id}
+=
+req.body;
+
+
+const {data,error}
+=
+await supabase
+.from("food_listings")
+.update({
+
+requested_by:
+ngo_id,
+
+status:
+"requested"
+
+})
+.eq("id",req.params.foodId)
+.eq("status","available")
+.select()
+.single();
+
+
+if(error||!data)
+return res.status(400)
+.json({error:"Food unavailable"});
+
+
+res.json({
+
+message:
+"Food requested",
+
+data
+
+});
+
+
+}
+
+catch(err){
+
+res.status(500)
+.json({error:err.message});
+
+}
+
+});
+
+
+
+
+// Complete donation
+
+router.put("/complete/:foodId",
+async(req,res)=>{
+
+try{
+
+const {data,error}
+=
+await supabase
+.from("food_listings")
+.update({
+
+status:
+"completed",
+
+completed_at:
+new Date().toISOString()
+
+})
+.eq("id",req.params.foodId)
+.eq("status","requested")
+.select()
+.single();
+
+
+if(error||!data)
+return res.status(400)
+.json({error:"Food not requested"});
+
+
+res.json({
+
+message:
+"Donation completed",
+
+data
+
+});
+
+}
+
+catch(err){
+
+res.status(500)
+.json({error:err.message});
+
+}
+
+});
+
+
+
 module.exports = router;

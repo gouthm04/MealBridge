@@ -9,10 +9,18 @@ router.post("/signup", async (req, res) => {
 
   try {
 
-    const { email, password, name, role, location } = req.body;
+    const {
+      email,
+      password,
+      name,
+      role,
+      location,
+      latitude,
+      longitude
+    } = req.body;
 
-    // Basic validation
-    if (!email || !password || !name || !role) {
+    // Validation
+    if (!email || !password || !name || !role || !latitude || !longitude) {
       return res.status(400).json({
         error: "Missing required fields"
       });
@@ -32,14 +40,15 @@ router.post("/signup", async (req, res) => {
 
     const userId = data.user.id;
 
-    // Insert profile into users table
     const { error: profileError } = await supabase
       .from("users")
       .insert({
         id: userId,
         name: name,
         role: role,
-        location: location
+        location: location,
+        latitude: latitude,
+        longitude: longitude
       });
 
     if (profileError) {
@@ -63,6 +72,7 @@ router.post("/signup", async (req, res) => {
 
 });
 
+
 // Login endpoint
 router.post("/login", async (req, res) => {
 
@@ -70,14 +80,12 @@ router.post("/login", async (req, res) => {
 
     const { email, password } = req.body;
 
-    // Basic validation
     if (!email || !password) {
       return res.status(400).json({
         error: "Email and password required"
       });
     }
 
-    // Authenticate with Supabase
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password
